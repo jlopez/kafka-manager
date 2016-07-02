@@ -137,13 +137,9 @@ object KafkaMetrics {
   private val operatingSystemObjectName = new ObjectName("java.lang:type=OperatingSystem")
 
   /* Log Segments */
-  private val logSegmentObjectName = new ObjectName("kafka.log:type=Log,name=*-LogSegments")
+  private val logSegmentObjectName = new ObjectName("kafka.log:type=Log,name=LogSegments,topic=*,partition=*")
 
-  private val directoryObjectName = new ObjectName("kafka.log:type=Log,name=*-Directory")
-
-  private val LogSegmentsNameRegex = new Regex("%s-LogSegments".format("""(.*)-(\d*)"""), "topic", "partition")
-
-  private val DirectoryNameRegex = new Regex("%s-Directory".format("""(.*)-(\d*)"""), "topic", "partition")
+  private val directoryObjectName = new ObjectName("kafka.log:type=Log,name=Directory,topic=*,partition=*")
 
   val LogSegmentRegex = new Regex(
     "baseOffset=(.*), created=(.*), logSize=(.*), indexSize=(.*)",
@@ -189,27 +185,16 @@ object KafkaMetrics {
     attributes.find(_.getName == name).map(_.getValue.asInstanceOf[Double]).getOrElse(0D)
   }
 
-  private def topicAndPartition(name: String, regex: Regex) = {
-    try {
-      val matches = regex.findAllIn(name).matchData.toSeq
-      require(matches.size == 1)
-      val m = matches.head
-
-      val topic = m.group("topic")
-      val partition = m.group("partition").toInt
-
-      (topic, partition)
-    }
-    catch {
-      case e: Exception =>
-        throw new IllegalStateException("Can't parse topic and partition from: <%s>".format(name), e)
-    }
+  private def topicAndPartition(objectName: ObjectName) = {
+    val topic = objectName.getKeyProperty("topic")
+    val partition = objectName.getKeyProperty("partition").toInt
+    (topic, partition)
   }
 
   private def queryValues[K, V](
     mbsc: MBeanServerConnection,
     objectName: ObjectName,
-    keyConverter: String => K,
+    keyConverter: ObjectName => K,
     valueConverter: Object => V
     ) = {
     val logsSizeObjectNames = mbsc.queryNames(objectName, null).asScala.toSeq
@@ -221,12 +206,11 @@ object KafkaMetrics {
   private def queryValue[K, V](
     mbsc: MBeanServerConnection,
     objectName: ObjectName,
-    keyConverter: String => K,
+    keyConverter: ObjectName => K,
     valueConverter: Object => V
     ) = {
-    val name = objectName.getKeyProperty("name")
     val mbean = MBeanServerInvocationHandler.newProxyInstance(mbsc, objectName, classOf[GaugeMBean], true)
-    (keyConverter(name), valueConverter(mbean.getValue))
+    (keyConverter(objectName), valueConverter(mbean.getValue))
   }
 
   private def parseLogSegment(str: String): LogSegment = {
@@ -252,7 +236,7 @@ object KafkaMetrics {
       queryValues(
         mbsc,
         logSegmentObjectName,
-        key => topicAndPartition(key, LogSegmentsNameRegex),
+        key => topicAndPartition(key),
         value => {
           val lst = value.asInstanceOf[ju.List[String]]
           lst.asScala.map(parseLogSegment).toSeq
@@ -264,7 +248,7 @@ object KafkaMetrics {
       queryValues(
         mbsc,
         directoryObjectName,
-        key => topicAndPartition(key, DirectoryNameRegex),
+        key => topicAndPartition(key),
         value => value.asInstanceOf[String]
       )
     }.toMap
